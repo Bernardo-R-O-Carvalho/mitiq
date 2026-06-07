@@ -16,6 +16,7 @@ from mitiq import QPROGRAM, Executor, Observable, QuantumResult
 from mitiq.experimental.pea.scale_amplifications import (
     scale_circuit_amplifications,
 )
+from mitiq.pec import OperationRepresentation
 from mitiq.pec.pec import (
     _LARGE_SAMPLE_WARN,
     LargeSampleWarning,
@@ -26,8 +27,9 @@ from mitiq.pec.pec import (
 def construct_circuits(
     circuit: Circuit,
     scale_factors: list[float],
-    noise_model: str,
-    epsilon: float,
+    representations: Sequence[OperationRepresentation] | None = None,
+    noise_model: str | None = None,
+    epsilon: float | None = None,
     random_state: int | np.random.RandomState | None = None,
     precision: float = 0.1,
     num_samples: int | None = None,
@@ -45,10 +47,17 @@ def construct_circuits(
             sequence is sampled.
         scale_factors: A list of (positive) numbers by which the baseline
             noise level is to be amplified.
+        representations: A sequence of :class:`.OperationRepresentation`
+            objects describing the quasi-probability representation of each
+            gate in the circuit. When provided, ``noise_model`` and
+            ``epsilon`` must not be given; the representations are used
+            directly at every scale factor.
         noise_model: A string describing the noise model to be used for the
             noise-scaled representations, e.g. "local_depolarizing" or
-            "global_depolarizing".
-        epsilon: Baseline noise level.
+            "global_depolarizing". Must be provided together with ``epsilon``
+            when ``representations`` is not given.
+        epsilon: Baseline noise level. Must be provided together with
+            ``noise_model`` when ``representations`` is not given.
         random_state: The random state or seed for reproducibility.
         precision: The desired precision for the sampling process.
             Default is 0.1.
@@ -57,9 +66,32 @@ def construct_circuits(
 
     Returns:
         The scaled circuits, their signs and norms at each scale factor.
+
     Raises:
+        ValueError: If neither ``representations`` nor the pair
+            ``(noise_model, epsilon)`` is supplied, or if both are supplied.
         ValueError: If the precision is not within the interval (0, 1].
     """
+    # Validate that exactly one of representations or (noise_model, epsilon)
+    # is provided.
+    using_representations = representations is not None
+    using_noise_model = noise_model is not None or epsilon is not None
+
+    if using_representations and using_noise_model:
+        raise ValueError(
+            "Provide either 'representations' or the pair "
+            "('noise_model', 'epsilon'), but not both."
+        )
+    if not using_representations and not using_noise_model:
+        raise ValueError(
+            "Either 'representations' or the pair "
+            "('noise_model', 'epsilon') must be provided."
+        )
+    if using_noise_model and (noise_model is None or epsilon is None):
+        raise ValueError(
+            "Both 'noise_model' and 'epsilon' must be provided together."
+        )
+
     if isinstance(random_state, int):
         random_state = np.random.RandomState(random_state)
 
@@ -69,10 +101,17 @@ def construct_circuits(
             f" but precision is {precision}."
         )
 
+    def _get_reps(scale_factor: float) -> Sequence[OperationRepresentation]:
+        if using_representations:
+            return representations  # type: ignore[return-value]
+        return scale_circuit_amplifications(
+            circuit, scale_factor, noise_model, epsilon  # type: ignore[arg-type]
+        )
+
     # Get the 1-norm of the circuit quasi-probability representation
     _, _, norm = sample_circuit(
         circuit,
-        scale_circuit_amplifications(circuit, 1.0, noise_model, epsilon),
+        _get_reps(1.0),
         num_samples=1,
     )
 
@@ -89,7 +128,7 @@ def construct_circuits(
     for s in scale_factors:
         sampled_circuits, signs, norm = sample_circuit(
             circuit,
-            scale_circuit_amplifications(circuit, s, noise_model, epsilon),
+            _get_reps(s),
             num_samples=num_samples,
             random_state=random_state,
         )
@@ -148,9 +187,10 @@ def execute_with_pea(
     circuit: Circuit,
     executor: Executor | Callable[[QPROGRAM], QuantumResult],
     scale_factors: list[float],
-    noise_model: str,
-    epsilon: float,
     extrapolation_method: Callable[[Sequence[float], Sequence[float]], float],
+    representations: Sequence[OperationRepresentation] | None = None,
+    noise_model: str | None = None,
+    epsilon: float | None = None,
     observable: Observable | None = None,
     random_state: int | np.random.RandomState | None = None,
     precision: float = 0.1,
@@ -166,9 +206,9 @@ def execute_with_pea(
 
     1. Sampling different implementable circuits from the quasi-probability
        representation of the input circuit at each of the input noise
-       `scale_factors`;
+       ``scale_factors``;
     2. Evaluating the noisy expectation values associated to the sampled
-       circuits (through the "executor" function provided by the user);
+       circuits (through the ``executor`` function provided by the user);
     3. Estimating the ideal expectation value from a suitable linear
        combination of the noisy ones at each noise scale factor;
     4. Extrapolating the expectation values obtained at each noise
@@ -180,17 +220,24 @@ def execute_with_pea(
             unmitigated ``QuantumResult`` (e.g. an expectation value).
         scale_factors: A list of (positive) numbers by which the baseline
             noise level is to be amplified.
-        noise_model: A string describing the noise model to be used for the
-            noise-scaled representations, e.g. "local_depolarizing" or
-            "global_depolarizing".
-        epsilon: Baseline noise level.
         extrapolation_method: The method of extrapolation to use when fitting
             the measured results. A list of built-in functions can be found
             in ``mitiq.zne.inference``.
+        representations: A sequence of :class:`.OperationRepresentation`
+            objects describing the quasi-probability representation of each
+            gate in the circuit. When provided, ``noise_model`` and
+            ``epsilon`` must not be given; the representations are used
+            directly at every scale factor.
+        noise_model: A string describing the noise model to be used for the
+            noise-scaled representations, e.g. "local_depolarizing" or
+            "global_depolarizing". Must be provided together with ``epsilon``
+            when ``representations`` is not given.
+        epsilon: Baseline noise level. Must be provided together with
+            ``noise_model`` when ``representations`` is not given.
         observable: Observable to compute the expectation value of. If None,
-            the `executor` must return an expectation value. Otherwise,
-            the `QuantumResult` returned by `executor` is used to compute the
-            expectation of the observable.
+            the ``executor`` must return an expectation value. Otherwise,
+            the ``QuantumResult`` returned by ``executor`` is used to compute
+            the expectation of the observable.
         random_state: The random state or seed for reproducibility.
         precision: The desired precision for the sampling process.
             Default is 0.1.
@@ -205,17 +252,47 @@ def execute_with_pea(
         The tuple ``(pea_value, pea_data)`` where ``pea_value`` is the
         expectation value estimated with PEA and ``pea_data`` is a dictionary
         which contains all the raw data involved in the PEA process. If
-        ``full_output`` is ``False``, only ``pea_value`` is
-        returned.
+        ``full_output`` is ``False``, only ``pea_value`` is returned.
+
+    Raises:
+        ValueError: If neither ``representations`` nor the pair
+            ``(noise_model, epsilon)`` is supplied, or if both are supplied.
+
+    Examples:
+        Use with a noise model string (original interface)::
+
+            pea_value = execute_with_pea(
+                circuit,
+                executor,
+                scale_factors=[1.0, 1.2, 1.6],
+                extrapolation_method=...,
+                noise_model="local_depolarizing",
+                epsilon=0.01,
+            )
+
+        Use with pre-built ``OperationRepresentation`` objects::
+
+            from mitiq.pec import represent_operations_in_circuit_with_local_depolarizing_noise
+            reps = represent_operations_in_circuit_with_local_depolarizing_noise(
+                circuit, noise_level=0.01
+            )
+            pea_value = execute_with_pea(
+                circuit,
+                executor,
+                scale_factors=[1.0, 1.2, 1.6],
+                extrapolation_method=...,
+                representations=reps,
+            )
     """
     scaled_circuits, scaled_signs, scaled_norms = construct_circuits(
         circuit,
         scale_factors,
-        noise_model,
-        epsilon,
-        random_state,
-        precision,
-        num_samples,
+        representations=representations,
+        noise_model=noise_model,
+        epsilon=epsilon,
+        random_state=random_state,
+        precision=precision,
+        num_samples=num_samples,
     )
     # Execute all sampled circuits
     if not isinstance(executor, Executor):

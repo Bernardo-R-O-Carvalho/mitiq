@@ -222,3 +222,105 @@ def test_pea_data_with_full_output():
     assert np.allclose(
         pea_data["scaled_expectation_values"], scaled_exp_values
     )
+# --- Tests for representations support (issue #2936) ---
+
+def test_construct_circuits_with_representations():
+    """Tests that construct_circuits accepts OperationRepresentation objects
+    directly instead of noise_model + epsilon."""
+    reps = get_pauli_and_cnot_representations(BASE_NOISE)
+    scaled_circuits, signs, norms = construct_circuits(
+        oneq_circ,
+        scale_factors=[1, 3, 5],
+        representations=reps,
+        num_samples=50,
+        random_state=1,
+    )
+    assert len(scaled_circuits) == 3
+    assert all(len(c) == 50 for c in scaled_circuits)
+
+
+def test_construct_circuits_representations_same_as_noise_model():
+    """Tests that passing representations directly gives the same result as
+    passing noise_model + epsilon when the representations are equivalent."""
+    reps = get_pauli_and_cnot_representations(BASE_NOISE)
+
+    _, _, norms_reps = construct_circuits(
+        oneq_circ,
+        scale_factors=[1],
+        representations=reps,
+        num_samples=10,
+        random_state=42,
+    )
+    _, _, norms_nm = construct_circuits(
+        oneq_circ,
+        scale_factors=[1],
+        noise_model="local_depolarizing",
+        epsilon=BASE_NOISE,
+        num_samples=10,
+        random_state=42,
+    )
+    assert np.isclose(norms_reps[0], norms_nm[0], rtol=0.1)
+
+
+def test_construct_circuits_raises_if_both_provided():
+    """Tests that passing both representations and noise_model raises."""
+    reps = get_pauli_and_cnot_representations(BASE_NOISE)
+    with pytest.raises(ValueError, match="not both"):
+        construct_circuits(
+            oneq_circ,
+            scale_factors=[1],
+            representations=reps,
+            noise_model="local_depolarizing",
+            epsilon=BASE_NOISE,
+        )
+
+
+def test_construct_circuits_raises_if_neither_provided():
+    """Tests that passing neither representations nor noise_model raises."""
+    with pytest.raises(ValueError, match="must be provided"):
+        construct_circuits(
+            oneq_circ,
+            scale_factors=[1],
+        )
+
+
+def test_construct_circuits_raises_if_only_noise_model_without_epsilon():
+    """Tests that passing noise_model without epsilon raises."""
+    with pytest.raises(ValueError, match="Both 'noise_model' and 'epsilon'"):
+        construct_circuits(
+            oneq_circ,
+            scale_factors=[1],
+            noise_model="local_depolarizing",
+        )
+
+
+def test_execute_with_pea_with_representations():
+    """Tests that execute_with_pea accepts representations directly and
+    returns a float result without error."""
+    reps = get_pauli_and_cnot_representations(BASE_NOISE)
+
+    mitigated = execute_with_pea(
+        oneq_circ,
+        executor,
+        scale_factors=[1, 1.2, 1.6],
+        extrapolation_method=LinearFactory.extrapolate,
+        representations=reps,
+        random_state=101,
+    )
+    assert isinstance(mitigated, float)
+
+
+def test_execute_with_pea_raises_if_both_provided():
+    """Tests that execute_with_pea raises if both representations and
+    noise_model are provided."""
+    reps = get_pauli_and_cnot_representations(BASE_NOISE)
+    with pytest.raises(ValueError, match="not both"):
+        execute_with_pea(
+            oneq_circ,
+            executor,
+            scale_factors=[1, 1.2, 1.6],
+            extrapolation_method=LinearFactory.extrapolate,
+            representations=reps,
+            noise_model="local_depolarizing",
+            epsilon=BASE_NOISE,
+        )
